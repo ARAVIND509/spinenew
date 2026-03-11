@@ -1,0 +1,16 @@
+{
+    "include": [
+        "server"
+    ],
+    "exclude": [
+        "node_modules",
+        "**/__pycache__"
+    ],
+    "pythonVersion": "3.10",
+    "pythonPlatform": "Windows",
+    "typeCheckingMode": "basic",
+    "diagnosticMode": "workspace",
+    "extraPaths": [
+        "c:\\users\\lenovo\\appdata\\local\\programs\\python\\python310\\lib\\site-packages"
+    ]
+}

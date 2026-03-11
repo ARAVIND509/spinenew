@@ -1,0 +1,16 @@
+numpy
+pillow
+scipy
+nibabel
+spinalcordtoolbox
+matplotlib
+scikit-image
+scikit-learn
+opencv-python
+tensorflow
+torch
+torchvision
+transformers
+typing-extensions
+pydicom
+nibabel
