@@ -10,3 +10,4 @@ vite.config.ts.*
 *.db
 attached_assets/
 test-data/
+.env
