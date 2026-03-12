@@ -26,7 +26,8 @@ setupAuth(app);
 app.use((req, res, next) => {
   const start = Date.now();
   const requestPath = req.path;
-  let capturedJsonResponse: Record<string, any> | undefined = undefined;
+
+  let capturedJsonResponse: Record<string, any> | undefined;
 
   const originalResJson = res.json;
 
@@ -45,8 +46,8 @@ app.use((req, res, next) => {
         logLine += ` :: ${JSON.stringify(capturedJsonResponse)}`;
       }
 
-      if (logLine.length > 80) {
-        logLine = logLine.slice(0, 79) + "…";
+      if (logLine.length > 100) {
+        logLine = logLine.slice(0, 99) + "...";
       }
 
       log(logLine);
@@ -97,12 +98,13 @@ app.use((req, res, next) => {
   });
 
   /* ----------- Vite / Static Serving ----------- */
-  if (app.get("env") === "development") {
+
+  if (process.env.NODE_ENV === "development") {
     await setupVite(app, server);
   } else {
-    serveStatic(app);
+    const distPath = path.resolve(__dirname, "../dist/public");
 
-    const distPath = path.resolve(process.cwd(), "dist/public");
+    log("Serving static files from: " + distPath);
 
     app.use(express.static(distPath));
 
@@ -112,19 +114,13 @@ app.use((req, res, next) => {
   }
 
   /* ----------- Render Port Handling ----------- */
-  const port = parseInt(process.env.PORT || "5000", 10);
+
+  const port = Number(process.env.PORT) || 5000;
 
   const host =
     process.env.NODE_ENV === "development" ? "localhost" : "0.0.0.0";
 
-  server.listen(
-    {
-      port,
-      host,
-      reusePort: process.env.NODE_ENV !== "development",
-    },
-    () => {
-      log(`Server running on ${host}:${port}`);
-    }
-  );
+  server.listen(port, host, () => {
+    log(`Server running on http://${host}:${port}`);
+  });
 })();
