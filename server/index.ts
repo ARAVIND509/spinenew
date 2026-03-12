@@ -1,6 +1,7 @@
 import "dotenv/config";
 import express, { type Request, Response, NextFunction } from "express";
 import path from "path";
+import { fileURLToPath } from "url";
 
 import { registerRoutes } from "./routes";
 import { setupAuth } from "./auth";
@@ -8,6 +9,11 @@ import { setupVite, serveStatic, log } from "./vite";
 import { setupWebSocket } from "./websocket-handler";
 import { storage } from "./storage";
 import { hashPassword } from "./auth";
+
+/* ---------- FIX FOR ESM (__dirname support) ---------- */
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+/* ----------------------------------------------------- */
 
 const app = express();
 
@@ -94,7 +100,6 @@ app.use((req, res, next) => {
   if (app.get("env") === "development") {
     await setupVite(app, server);
   } else {
-    // Production: serve built frontend
     serveStatic(app);
 
     const distPath = path.resolve(process.cwd(), "dist/public");
