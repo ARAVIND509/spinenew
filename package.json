@@ -9,7 +9,7 @@
     "prisma": "prisma generate"
   },
   "dependencies": {
-    "esbuild": "^0.25.12",
+    "esbuild": "^0.27.3",
     "@hookform/resolvers": "^3.9.0",
     "@prisma/client": "6.19.2",
     "@radix-ui/react-alert-dialog": "^1.1.15",
