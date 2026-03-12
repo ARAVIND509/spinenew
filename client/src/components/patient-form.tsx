@@ -11,8 +11,7 @@ import {
   FormLabel,
   FormMessage,
 } from "@/components/ui/form";
-import { insertPatientSchema } from "@shared/schema";
-
+import { something } from "../../../shared/schema";
 const formSchema = insertPatientSchema.extend({
   age: z.coerce.number().min(0).max(150).optional(),
 });
