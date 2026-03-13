@@ -11,7 +11,8 @@ import {
   FormLabel,
   FormMessage,
 } from "@/components/ui/form";
-import { something } from "../../../shared/schema";
+import { insertPatientSchema } from "@shared/schema";
+
 const formSchema = insertPatientSchema.extend({
   age: z.coerce.number().min(0).max(150).optional(),
 });
@@ -79,7 +80,9 @@ export function PatientForm({ onSubmit, isSubmitting }: PatientFormProps) {
           name="age"
           render={({ field }) => (
             <FormItem>
-              <FormLabel className="text-medical-label">Age (Optional)</FormLabel>
+              <FormLabel className="text-medical-label">
+                Age (Optional)
+              </FormLabel>
               <FormControl>
                 <Input
                   {...field}
