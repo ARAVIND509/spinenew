@@ -1,143 +1,77 @@
-import {
-  type Patient, type InsertPatient,
-  type Scan, type InsertScan,
-  type Analysis, type InsertAnalysis,
-  type User, type InsertUser
-} from "@shared/schema";
-import { prisma } from "./db";
-import session from "express-session";
-import MemoryStoreFactory from "memorystore";
+import { db } from "./db";
 
-const MemoryStore = MemoryStoreFactory(session);
-
-export interface IStorage {
-  // Patient operations
-  getPatient(id: string): Promise<Patient | undefined>;
-  getAllPatients(): Promise<Patient[]>;
-  createPatient(patient: InsertPatient): Promise<Patient>;
-
-  // Scan operations
-  getScan(id: string): Promise<Scan | undefined>;
-  getScansByPatient(patientCaseId: string): Promise<Scan[]>;
-  getRecentScans(limit?: number): Promise<Scan[]>;
-  createScan(scan: InsertScan): Promise<Scan>;
-
-  // Analysis operations
-  getAnalysis(scanId: string): Promise<Analysis | undefined>;
-  getAllAnalyses(): Promise<Analysis[]>;
-  createAnalysis(analysis: InsertAnalysis): Promise<Analysis>;
-
-  // User operations
-  getUser(id: string): Promise<User | undefined>;
-  getUserByUsername(username: string): Promise<User | undefined>;
-  createUser(user: InsertUser): Promise<User>;
-
-  sessionStore: session.Store;
-}
-
-export class DatabaseStorage implements IStorage {
-  // Patient operations
-  async getPatient(id: string): Promise<Patient | undefined> {
-    const patient = await prisma.patient.findUnique({
-      where: { id }
+export const storage = {
+  async getPatients(limit: number = 50) {
+    return await db.patient.findMany({
+      orderBy: { createdAt: "desc" },
+      take: limit,
     });
-    return patient || undefined;
-  }
+  },
 
-  async getAllPatients(): Promise<Patient[]> {
-    return await prisma.patient.findMany({
-      orderBy: { createdAt: 'desc' }
+  async getRecentScans(limit: number = 20) {
+    return await db.scan.findMany({
+      orderBy: { createdAt: "desc" },
+      take: limit,
     });
-  }
+  },
 
-  async createPatient(insertPatient: InsertPatient): Promise<Patient> {
-    return await prisma.patient.create({
-      data: insertPatient
+  async getScanById(id: string) {
+    return await db.scan.findUnique({
+      where: { id },
     });
-  }
+  },
 
-  // Scan operations
-  async getScan(id: string): Promise<Scan | undefined> {
-    const scan = await prisma.scan.findUnique({
-      where: { id }
-    });
-    return scan || undefined;
-  }
+  async createPatient(data: {
+    patientId: string;
+    firstName?: string;
+    lastName?: string;
+    fullName?: string;
+    age?: number | null;
+    gender?: string | null;
+    phone?: string | null;
+  }) {
+    const computedName =
+      data.fullName?.trim() ||
+      `${data.firstName ?? ""} ${data.lastName ?? ""}`.trim() ||
+      "Unknown Patient";
 
-  async getScansByPatient(patientCaseId: string): Promise<Scan[]> {
-    return await prisma.scan.findMany({
-      where: { patientCaseId },
-      orderBy: { uploadedAt: 'desc' }
-    });
-  }
-
-  async getRecentScans(limit: number = 10): Promise<Scan[]> {
-    return await prisma.scan.findMany({
-      orderBy: { uploadedAt: 'desc' },
-      take: limit
-    });
-  }
-
-  async createScan(insertScan: InsertScan): Promise<Scan> {
-    // metadata is Json type in Prisma, insertScan.metadata is any/null
-    return await prisma.scan.create({
+    return await db.patient.create({
       data: {
-        patientCaseId: insertScan.patientCaseId,
-        imageUrl: insertScan.imageUrl,
-        imageType: insertScan.imageType,
-        metadata: insertScan.metadata ?? undefined
-      }
+        patientId: data.patientId,
+        name: computedName,
+        firstName: data.firstName ?? "",
+        lastName: data.lastName ?? "",
+        fullName: data.fullName?.trim() || computedName,
+        age: data.age ?? null,
+        gender: data.gender ?? null,
+        phone: data.phone ?? null,
+      },
     });
-  }
+  },
 
-  // Analysis operations
-  async getAnalysis(scanId: string): Promise<Analysis | undefined> {
-    const analysis = await prisma.analysis.findFirst({
-      where: { scanId }
-    });
-    return analysis || undefined;
-  }
-
-  async getAllAnalyses(): Promise<Analysis[]> {
-    return await prisma.analysis.findMany({
-      orderBy: { analyzedAt: 'desc' }
-    });
-  }
-
-  async createAnalysis(insertAnalysis: InsertAnalysis): Promise<Analysis> {
-    // results is Json type in Prisma
-    return await prisma.analysis.create({
+  async createScan(data: {
+    patientId: string;
+    scanType?: string;
+    imageType?: string | null;
+    imageUrl?: string | null;
+    heatmapUrl?: string | null;
+    notes?: string | null;
+    reportText?: string | null;
+    analysisResults?: string | null;
+    status?: string;
+  }) {
+    return await db.scan.create({
       data: {
-        scanId: insertAnalysis.scanId,
-        results: insertAnalysis.results as any
-      }
+        patientId: data.patientId,
+        scanType: data.scanType ?? "MRI",
+        imageType: data.imageType ?? null,
+        imageUrl: data.imageUrl ?? null,
+        heatmapUrl: data.heatmapUrl ?? null,
+        notes: data.notes ?? null,
+        reportText: data.reportText ?? null,
+        analysisResults: data.analysisResults ?? null,
+        status: data.status ?? "completed",
+      },
     });
-  }
-
-  // User operations
-  async getUser(id: string): Promise<User | undefined> {
-    const user = await (prisma as any).user.findUnique({
-      where: { id }
-    });
-    return user || undefined;
-  }
-
-  async getUserByUsername(username: string): Promise<User | undefined> {
-    const user = await (prisma as any).user.findUnique({
-      where: { username }
-    });
-    return user || undefined;
-  }
-
-  async createUser(insertUser: InsertUser): Promise<User> {
-    return await (prisma as any).user.create({
-      data: insertUser
-    });
-  }
-
-  sessionStore: session.Store = new MemoryStore({
-    checkPeriod: 86400000 // prune expired entries every 24h
-  });
-}
-
-export const storage = new DatabaseStorage();
+  },
+};
