@@ -1,6 +1,12 @@
 import { prisma } from "./db";
 
 export const storage = {
+  async getUser(id: string | number) {
+    return await prisma.user.findUnique({
+      where: { id: typeof id === "string" ? parseInt(id, 10) : id },
+    });
+  },
+
   async getUserByUsername(username: string) {
     return await prisma.user.findUnique({
       where: { username },
