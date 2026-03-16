@@ -15,17 +15,26 @@ export default defineConfig({
   resolve: {
     alias: {
       "@": path.resolve(__dirname, "./client/src"),
-      "@shared": path.resolve(__dirname, "shared")
-    }
+      "@shared": path.resolve(__dirname, "./shared"),
+    },
   },
 
   build: {
     outDir: "../dist/public",
-    emptyOutDir: true
+    emptyOutDir: true,
+    sourcemap: false,
+    chunkSizeWarningLimit: 1000,
+    rollupOptions: {
+      output: {
+        manualChunks: {
+          vendor: ["react", "react-dom"],
+        },
+      },
+    },
   },
 
   server: {
     host: "0.0.0.0",
-    port: 5173
-  }
+    port: 5173,
+  },
 });
