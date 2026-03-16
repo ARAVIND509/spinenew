@@ -1,6 +1,24 @@
 import { prisma } from "./db";
 
 export const storage = {
+  async getUserByUsername(username: string) {
+    return await prisma.user.findUnique({
+      where: { username },
+    });
+  },
+
+  async createUser(data: {
+    username: string;
+    password: string;
+  }) {
+    return await prisma.user.create({
+      data: {
+        username: data.username,
+        password: data.password,
+      },
+    });
+  },
+
   async getPatients(limit: number = 50) {
     return await prisma.patient.findMany({
       orderBy: { createdAt: "desc" },
