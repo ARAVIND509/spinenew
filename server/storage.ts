@@ -1,22 +1,22 @@
-import { db } from "./db";
+import { prisma } from "./db";
 
 export const storage = {
   async getPatients(limit: number = 50) {
-    return await db.patient.findMany({
+    return await prisma.patient.findMany({
       orderBy: { createdAt: "desc" },
       take: limit,
     });
   },
 
   async getRecentScans(limit: number = 20) {
-    return await db.scan.findMany({
+    return await prisma.scan.findMany({
       orderBy: { createdAt: "desc" },
       take: limit,
     });
   },
 
   async getScanById(id: string) {
-    return await db.scan.findUnique({
+    return await prisma.scan.findUnique({
       where: { id },
     });
   },
@@ -35,7 +35,7 @@ export const storage = {
       `${data.firstName ?? ""} ${data.lastName ?? ""}`.trim() ||
       "Unknown Patient";
 
-    return await db.patient.create({
+    return await prisma.patient.create({
       data: {
         patientId: data.patientId,
         name: computedName,
@@ -60,7 +60,7 @@ export const storage = {
     analysisResults?: string | null;
     status?: string;
   }) {
-    return await db.scan.create({
+    return await prisma.scan.create({
       data: {
         patientId: data.patientId,
         scanType: data.scanType ?? "MRI",
