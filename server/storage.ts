@@ -13,10 +13,7 @@ export const storage = {
     });
   },
 
-  async createUser(data: {
-    username: string;
-    password: string;
-  }) {
+  async createUser(data: { username: string; password: string }) {
     return await prisma.user.create({
       data: {
         username: data.username,
@@ -33,8 +30,24 @@ export const storage = {
   },
 
   async getPatientByPatientId(patientId: string) {
-    return await prisma.patient.findUnique({
+    return await prisma.patient.findFirst({
       where: { patientId },
+    });
+  },
+
+  async createPatient(data: {
+    patientId: string;
+    fullName?: string;
+    age?: number | null;
+  }) {
+    const computedName = data.fullName?.trim() || "Unknown Patient";
+
+    return await prisma.patient.create({
+      data: {
+        patientId: data.patientId,
+        name: computedName,
+        age: data.age ?? null,
+      },
     });
   },
 
@@ -44,6 +57,7 @@ export const storage = {
       take: limit,
       include: {
         patient: true,
+        analyses: true,
       },
     });
   },
@@ -53,73 +67,75 @@ export const storage = {
       where: { id },
       include: {
         patient: true,
-      },
-    });
-  },
-
-  async createPatient(data: {
-    patientId: string;
-    firstName?: string;
-    lastName?: string;
-    fullName?: string;
-    age?: number | null;
-    gender?: string | null;
-    phone?: string | null;
-  }) {
-    const computedName =
-      data.fullName?.trim() ||
-      `${data.firstName ?? ""} ${data.lastName ?? ""}`.trim() ||
-      "Unknown Patient";
-
-    return await prisma.patient.create({
-      data: {
-        patientId: data.patientId,
-        name: computedName,
-        firstName: data.firstName ?? "",
-        lastName: data.lastName ?? "",
-        fullName: data.fullName?.trim() || computedName,
-        age: data.age ?? null,
-        gender: data.gender ?? null,
-        phone: data.phone ?? null,
+        analyses: true,
       },
     });
   },
 
   async createScan(data: {
-    patientId: string;
-    scanType?: string;
-    imageType?: string | null;
-    imageUrl?: string | null;
-    heatmapUrl?: string | null;
-    notes?: string | null;
-    reportText?: string | null;
-    analysisResults?: string | null;
-    status?: string;
+    patientCaseId: string;
+    imageUrl: string;
+    imageType: string;
+    metadata?: any;
   }) {
     return await prisma.scan.create({
       data: {
-        patientId: data.patientId,
-        scanType: data.scanType ?? "MRI",
-        imageType: data.imageType ?? null,
-        imageUrl: data.imageUrl ?? null,
-        heatmapUrl: data.heatmapUrl ?? null,
-        notes: data.notes ?? null,
-        reportText: data.reportText ?? null,
-        analysisResults: data.analysisResults ?? null,
-        status: data.status ?? "completed",
+        patientCaseId: data.patientCaseId,
+        imageUrl: data.imageUrl,
+        imageType: data.imageType,
+        metadata: data.metadata ?? null,
+      },
+    });
+  },
+
+  async createAnalysis(data: {
+    scanId: string;
+    results: any;
+  }) {
+    return await prisma.analysis.create({
+      data: {
+        scanId: data.scanId,
+        results: data.results,
       },
     });
   },
 
   async deleteScan(id: string) {
+    await prisma.analysis.deleteMany({
+      where: { scanId: id },
+    });
+
     return await prisma.scan.delete({
       where: { id },
     });
   },
 
   async deletePatient(patientId: string) {
-    return await prisma.patient.delete({
+    const patient = await prisma.patient.findFirst({
       where: { patientId },
+      include: { scans: true },
+    });
+
+    if (!patient) return null;
+
+    const scanIds = patient.scans.map((scan) => scan.id);
+
+    if (scanIds.length > 0) {
+      await prisma.analysis.deleteMany({
+        where: {
+          scanId: { in: scanIds },
+        },
+      });
+
+      await prisma.scan.deleteMany({
+        where: {
+          patientCaseId: patient.id,
+        },
+      });
+    }
+
+    return await prisma.patient.delete({
+      where: { id: patient.id },
     });
   },
 };

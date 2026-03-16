@@ -278,21 +278,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   app.post("/api/patients", async (req: Request, res: Response) => {
     try {
-      const {
-        patientId,
-        firstName,
-        lastName,
-        fullName,
-        age,
-        gender,
-        phone,
-      } = req.body ?? {};
+      const { patientId, fullName, age } = req.body ?? {};
 
       if (!patientId || String(patientId).trim() === "") {
         return res.status(400).json({ message: "patientId is required" });
       }
 
-      const existingPatient = await storage.getPatientByPatientId(String(patientId));
+      const existingPatient = await storage.getPatientByPatientId(String(patientId).trim());
 
       if (existingPatient) {
         return res.status(200).json(existingPatient);
@@ -300,15 +292,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       const patient = await storage.createPatient({
         patientId: String(patientId).trim(),
-        firstName: firstName ? String(firstName).trim() : "",
-        lastName: lastName ? String(lastName).trim() : "",
         fullName: fullName ? String(fullName).trim() : undefined,
         age:
           age !== undefined && age !== null && age !== ""
             ? Number(age)
             : null,
-        gender: gender ? String(gender).trim() : null,
-        phone: phone ? String(phone).trim() : null,
       });
 
       return res.status(201).json(patient);
@@ -328,9 +316,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const formatted = (scans ?? []).map((scan: any) => {
         const metadata =
           safeJsonParse(scan.metadata) ||
-          safeJsonParse(scan.analysisResults) ||
-          safeJsonParse(scan.results) ||
-          safeJsonParse(scan.mlResults) ||
+          safeJsonParse(scan.analyses?.[0]?.results) ||
           null;
 
         const normalized = metadata ? normalizeDiseasePredictions(metadata) : null;
@@ -366,9 +352,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       const parsedResults =
         safeJsonParse((scan as any).metadata) ||
-        safeJsonParse((scan as any).analysisResults) ||
-        safeJsonParse((scan as any).results) ||
-        safeJsonParse((scan as any).mlResults) ||
+        safeJsonParse((scan as any).analyses?.[0]?.results) ||
         null;
 
       const normalizedResults = parsedResults
