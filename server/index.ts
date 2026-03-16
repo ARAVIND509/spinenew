@@ -1,7 +1,6 @@
 import "dotenv/config";
-import express, { type Request, Response, NextFunction } from "express";
+import express, { type Request, type Response, type NextFunction } from "express";
 import path from "path";
-import { fileURLToPath } from "url";
 
 import { registerRoutes } from "./routes";
 import { setupAuth, hashPassword } from "./auth";
@@ -9,10 +8,9 @@ import { setupVite, log } from "./vite";
 import { setupWebSocket } from "./websocket-handler";
 import { storage } from "./storage";
 
-/* ---------- FIX FOR ESM (__dirname support) ---------- */
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-/* ----------------------------------------------------- */
+/* ---------- FIX FOR CJS BUILD ---------- */
+const __dirname = process.cwd();
+/* --------------------------------------- */
 
 const app = express();
 
@@ -29,7 +27,6 @@ app.use((req, res, next) => {
 
   res.on("finish", () => {
     const duration = Date.now() - start;
-
     if (requestPath.startsWith("/api")) {
       log(`${req.method} ${requestPath} ${res.statusCode} in ${duration}ms`);
     }
@@ -41,26 +38,19 @@ app.use((req, res, next) => {
 /* -------------------- Main Server -------------------- */
 (async () => {
   const server = await registerRoutes(app);
-
   setupWebSocket(server);
 
   /* ----------- Seed Admin User ----------- */
   try {
     const admin = await storage.getUserByUsername("admin");
-
     if (!admin) {
       log("Seeding default admin user...");
-
       const hashedPassword = await hashPassword("password123");
-
       await storage.createUser({
         username: "admin",
         password: hashedPassword,
       });
-
-      log(
-        "Admin user created successfully (username: admin, password: password123)"
-      );
+      log("Admin user created successfully (username: admin, password: password123)");
     }
   } catch (err) {
     console.error("Failed to seed admin user:", err);
@@ -78,7 +68,8 @@ app.use((req, res, next) => {
 
     if (err?.message === "Unsupported file type") {
       return res.status(400).json({
-        message: "Unsupported file type. Please upload PNG, JPG, JPEG, WEBP, BMP, or DICOM.",
+        message:
+          "Unsupported file type. Please upload PNG, JPG, JPEG, WEBP, BMP, or DICOM.",
       });
     }
 
@@ -100,8 +91,7 @@ app.use((req, res, next) => {
   if (process.env.NODE_ENV === "development") {
     await setupVite(app, server);
   } else {
-    const distPath = path.resolve(__dirname, "../dist/public");
-
+    const distPath = path.resolve(__dirname, "dist/public");
     log("Serving static files from: " + distPath);
 
     app.use(express.static(distPath));
@@ -113,8 +103,7 @@ app.use((req, res, next) => {
 
   /* ----------- Render Port Handling ----------- */
   const port = Number(process.env.PORT) || 5000;
-  const host =
-    process.env.NODE_ENV === "development" ? "localhost" : "0.0.0.0";
+  const host = process.env.NODE_ENV === "development" ? "localhost" : "0.0.0.0";
 
   server.listen(port, host, () => {
     log(`Server running on http://${host}:${port}`);
