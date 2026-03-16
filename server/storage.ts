@@ -2,8 +2,15 @@ import { prisma } from "./db";
 
 export const storage = {
   async getUser(id: string | number) {
+    const numericId =
+      typeof id === "string" ? parseInt(id, 10) : id;
+
+    if (!Number.isFinite(numericId)) {
+      return null;
+    }
+
     return await prisma.user.findUnique({
-      where: { id: typeof id === "string" ? parseInt(id, 10) : id },
+      where: { id: numericId },
     });
   },
 
@@ -32,16 +39,28 @@ export const storage = {
     });
   },
 
+  async getPatientByPatientId(patientId: string) {
+    return await prisma.patient.findUnique({
+      where: { patientId },
+    });
+  },
+
   async getRecentScans(limit: number = 20) {
     return await prisma.scan.findMany({
       orderBy: { createdAt: "desc" },
       take: limit,
+      include: {
+        patient: true,
+      },
     });
   },
 
   async getScanById(id: string) {
     return await prisma.scan.findUnique({
       where: { id },
+      include: {
+        patient: true,
+      },
     });
   },
 
@@ -96,6 +115,18 @@ export const storage = {
         analysisResults: data.analysisResults ?? null,
         status: data.status ?? "completed",
       },
+    });
+  },
+
+  async deleteScan(id: string) {
+    return await prisma.scan.delete({
+      where: { id },
+    });
+  },
+
+  async deletePatient(patientId: string) {
+    return await prisma.patient.delete({
+      where: { patientId },
     });
   },
 };
