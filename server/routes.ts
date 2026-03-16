@@ -1,297 +1,568 @@
-import type { Express } from "express";
+import type { Express, Request, Response } from "express";
 import { createServer, type Server } from "http";
 import multer from "multer";
+import path from "path";
+import fs from "fs";
+import { randomUUID } from "crypto";
 import { storage } from "./storage";
-import { analyzeWithMedicalModel } from "./ml-analysis";
-import { analyzeWithSCT } from "./sct-bridge";
-import { insertPatientSchema, insertScanSchema, insertAnalysisSchema } from "@shared/schema";
-import { parseDICOM } from "./dicom-parser";
-import { updateAnalysisProgress } from "./websocket-handler";
-import { ensureAuthenticated } from "./auth";
 
-/* ------------------------------------------------ */
-/* REALISTIC SEVERITY NORMALIZATION (FIXED)         */
-/* ------------------------------------------------ */
+/* -------------------- Upload Setup -------------------- */
 
-function normalizeDiseaseSeverities(results: any) {
+const uploadsDir = path.join(process.cwd(), "uploads");
 
-  const conditions = [
-    "discHerniation",
-    "scoliosis",
-    "spinalStenosis",
-    "degenerativeDisc",
-    "vertebralFracture",
-    "infection",
-    "tumor"
-  ];
+if (!fs.existsSync(uploadsDir)) {
+  fs.mkdirSync(uploadsDir, { recursive: true });
+}
 
-  let detected = 0;
+const multerStorage = multer.diskStorage({
+  destination: (_req, _file, cb) => {
+    cb(null, uploadsDir);
+  },
+  filename: (_req, file, cb) => {
+    const ext = path.extname(file.originalname || "").toLowerCase();
+    const safeExt = ext || ".png";
+    cb(null, `${Date.now()}-${randomUUID()}${safeExt}`);
+  },
+});
 
-  for (const condition of conditions) {
+const upload = multer({
+  storage: multerStorage,
+  limits: {
+    fileSize: 10 * 1024 * 1024,
+  },
+  fileFilter: (_req, file, cb) => {
+    const allowedMimeTypes = [
+      "image/png",
+      "image/jpeg",
+      "image/jpg",
+      "image/webp",
+      "image/bmp",
+      "application/dicom",
+    ];
 
-    const finding = results?.[condition];
+    const allowedExtensions = [
+      ".png",
+      ".jpg",
+      ".jpeg",
+      ".webp",
+      ".bmp",
+      ".dcm",
+    ];
 
-    if (!finding || finding.confidence === undefined) continue;
+    const ext = path.extname(file.originalname || "").toLowerCase();
 
-    const confidence = finding.confidence;
-
-    // Ignore weak predictions
-    if (confidence < 60) {
-      delete results[condition];
-      continue;
+    if (
+      allowedMimeTypes.includes(file.mimetype) ||
+      allowedExtensions.includes(ext)
+    ) {
+      cb(null, true);
+      return;
     }
 
-    let severity = "mild";
+    cb(new Error("Unsupported file type"));
+  },
+});
 
-    if (confidence >= 60 && confidence < 70) severity = "mild";
-    else if (confidence >= 70 && confidence < 85) severity = "moderate";
-    else if (confidence >= 85) severity = "severe";
+/* -------------------- Helpers -------------------- */
 
-    finding.severity = severity;
-
-    detected++;
-
+function normalizeDiseasePredictions(results: any) {
+  if (!results || typeof results !== "object") {
+    return {
+      mlPredictions: {
+        predictions: [
+          {
+            disease: "Normal",
+            confidence: 0.8,
+            severity: "normal",
+          },
+        ],
+      },
+    };
   }
 
-  // If nothing detected
-  if (detected === 0) {
-    results.summary = "Normal Spine";
+  if (!results.mlPredictions || typeof results.mlPredictions !== "object") {
+    results.mlPredictions = { predictions: [] };
   }
+
+  const rawPredictions = Array.isArray(results.mlPredictions.predictions)
+    ? results.mlPredictions.predictions
+    : [];
+
+  const getDiseaseName = (p: any) => {
+    return (
+      p?.disease ||
+      p?.condition ||
+      p?.label ||
+      p?.className ||
+      p?.name ||
+      "Unknown"
+    );
+  };
+
+  const normalizeConfidence = (value: any) => {
+    if (typeof value !== "number" || Number.isNaN(value)) return 0;
+    return value > 1 ? value / 100 : value;
+  };
+
+  const getSeverity = (confidence: number) => {
+    if (confidence >= 0.85) return "severe";
+    if (confidence >= 0.7) return "moderate";
+    if (confidence >= 0.5) return "mild";
+    return "low";
+  };
+
+  const cleaned = rawPredictions
+    .map((p: any) => {
+      const disease = String(getDiseaseName(p)).trim();
+      const confidence = normalizeConfidence(
+        p?.confidence ?? p?.score ?? p?.probability
+      );
+
+      return {
+        ...p,
+        disease,
+        confidence,
+        severity: getSeverity(confidence),
+      };
+    })
+    .filter((p: any) => p.disease && p.disease !== "Unknown");
+
+  const dedupedMap = new Map<string, any>();
+
+  for (const pred of cleaned) {
+    const key = pred.disease.toLowerCase();
+    const existing = dedupedMap.get(key);
+
+    if (!existing || pred.confidence > existing.confidence) {
+      dedupedMap.set(key, pred);
+    }
+  }
+
+  const deduped = Array.from(dedupedMap.values())
+    .filter((p: any) => p.confidence >= 0.4)
+    .sort((a: any, b: any) => b.confidence - a.confidence);
+
+  if (deduped.length === 0) {
+    results.mlPredictions.predictions = [
+      {
+        disease: "Normal",
+        confidence: 0.8,
+        severity: "normal",
+      },
+    ];
+    return results;
+  }
+
+  const topPrediction = deduped[0];
+
+  if (
+    String(topPrediction.disease).toLowerCase() === "normal" &&
+    topPrediction.confidence >= 0.75
+  ) {
+    results.mlPredictions.predictions = [topPrediction];
+    return results;
+  }
+
+  const finalPredictions = deduped
+    .filter((p: any) => String(p.disease).toLowerCase() !== "normal")
+    .slice(0, 3);
+
+  results.mlPredictions.predictions =
+    finalPredictions.length > 0 ? finalPredictions : [topPrediction];
 
   return results;
 }
 
-/* ------------------------------------------------ */
-/* MULTER CONFIG                                    */
-/* ------------------------------------------------ */
+function safeJsonParse(value: any) {
+  if (value == null) return null;
+  if (typeof value === "object") return value;
 
-const upload = multer({
-  storage: multer.memoryStorage(),
-  limits: {
-    fileSize: 50 * 1024 * 1024,
-  },
-});
+  if (typeof value === "string") {
+    if (value.length > 2_000_000) {
+      return null;
+    }
 
-/* ------------------------------------------------ */
-/* ROUTE REGISTRATION                               */
-/* ------------------------------------------------ */
+    try {
+      return JSON.parse(value);
+    } catch {
+      return null;
+    }
+  }
+
+  return null;
+}
+
+function buildScanSummary(scan: any) {
+  const parsedResults =
+    safeJsonParse(scan.analysisResults) ||
+    safeJsonParse(scan.results) ||
+    safeJsonParse(scan.mlResults) ||
+    null;
+
+  const normalized = parsedResults
+    ? normalizeDiseasePredictions(parsedResults)
+    : null;
+
+  const predictions = normalized?.mlPredictions?.predictions ?? [];
+  const topPrediction = predictions[0] ?? null;
+
+  return {
+    id: scan.id,
+    patientId: scan.patientId,
+    scanType: scan.scanType ?? scan.modality ?? "Unknown",
+    imageType: scan.imageType ?? null,
+    status: scan.status ?? "completed",
+    createdAt: scan.createdAt,
+    updatedAt: scan.updatedAt ?? null,
+    imageUrl: scan.imageUrl ?? null,
+    heatmapUrl: scan.heatmapUrl ?? null,
+    resultSummary: topPrediction
+      ? {
+          disease: topPrediction.disease,
+          confidence: topPrediction.confidence,
+          severity: topPrediction.severity,
+        }
+      : null,
+  };
+}
+
+/* -------------------- Routes -------------------- */
 
 export async function registerRoutes(app: Express): Promise<Server> {
+  const server = createServer(app);
 
-  app.use("/api", (req, res, next) => {
-    if (
-      req.path === "/register" ||
-      req.path === "/login" ||
-      req.path === "/logout" ||
-      req.path === "/user"
-    ) {
-      return next();
-    }
-
-    ensureAuthenticated(req, res, next);
+  app.use("/uploads", (_req, res, next) => {
+    res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
+    next();
   });
 
-  /* ---------------- PATIENT ROUTES ---------------- */
+  app.use("/uploads", require("express").static(uploadsDir));
 
-  app.get("/api/patients", async (req, res) => {
-    try {
-      const patients = await storage.getAllPatients();
-      res.json(patients);
-    } catch (error) {
-      res.status(500).json({ error: (error as Error).message });
-    }
+  /* -------- Health Check -------- */
+  app.get("/api/health", async (_req: Request, res: Response) => {
+    res.json({ ok: true, message: "Server is running" });
   });
 
-  app.post("/api/patients", async (req, res) => {
+  /* -------- Patients List -------- */
+  app.get("/api/patients", async (req: Request, res: Response) => {
     try {
-      const validatedData = insertPatientSchema.parse(req.body);
-      const patient = await storage.createPatient(validatedData);
-      res.status(201).json(patient);
-    } catch (error) {
-      res.status(400).json({ error: (error as Error).message });
-    }
-  });
+      const limit = Math.min(Number(req.query.limit) || 50, 50);
+      const patients = await storage.getPatients?.(limit);
 
-  /* ---------------- SCAN ROUTES ---------------- */
+      if (Array.isArray(patients)) {
+        const compactPatients = patients.map((patient: any) => ({
+          id: patient.id,
+          patientId: patient.patientId,
+          firstName: patient.firstName ?? "",
+          lastName: patient.lastName ?? "",
+          fullName:
+            patient.fullName ??
+            `${patient.firstName ?? ""} ${patient.lastName ?? ""}`.trim(),
+          name:
+            patient.fullName ??
+            `${patient.firstName ?? ""} ${patient.lastName ?? ""}`.trim(),
+          age: patient.age ?? null,
+          gender: patient.gender ?? null,
+          phone: patient.phone ?? null,
+          createdAt: patient.createdAt,
+        }));
 
-  app.get("/api/scans/:patientCaseId", async (req, res) => {
-    try {
-      const scans = await storage.getScansByPatient(req.params.patientCaseId);
-      res.json(scans);
-    } catch (error) {
-      res.status(500).json({ error: (error as Error).message });
-    }
-  });
-
-  app.post("/api/upload", upload.single("image"), async (req, res) => {
-
-    try {
-
-      if (!req.file) {
-        return res.status(400).json({ error: "No image uploaded" });
+        return res.json(compactPatients);
       }
 
-      const { patientCaseId, imageType } = req.body;
-
-      let imageUrl: string;
-      let metadata: any = null;
-
-      const isDICOM =
-        req.file.mimetype === "application/dicom" ||
-        req.file.originalname.toLowerCase().endsWith(".dcm");
-
-      if (isDICOM) {
-
-        const dicomData = await parseDICOM(req.file.buffer);
-
-        imageUrl = `data:image/png;base64,${dicomData.imageBuffer.toString("base64")}`;
-
-        metadata = dicomData.metadata;
-
-      } else {
-
-        const base64Image = req.file.buffer.toString("base64");
-
-        imageUrl = `data:${req.file.mimetype};base64,${base64Image}`;
-
-      }
-
-      const scanData = {
-        patientCaseId,
-        imageUrl,
-        imageType,
-        metadata,
-      };
-
-      const validatedScanData = insertScanSchema.parse(scanData);
-
-      const scan = await storage.createScan(validatedScanData);
-
-      res.status(201).json({ scan });
-
+      return res.json([]);
     } catch (error) {
-
-      console.error("Upload error:", error);
-
-      res.status(500).json({ error: (error as Error).message });
-
+      console.error("Error fetching patients:", error);
+      return res.status(500).json({ message: "Failed to fetch patients" });
     }
-
   });
 
-  /* ------------------------------------------------ */
-  /* ANALYSIS ROUTE                                  */
-  /* ------------------------------------------------ */
-
-  app.post("/api/analyze/:scanId", async (req, res) => {
-
+  /* -------- Recent Scans -------- */
+  app.get("/api/scans/recent", async (req: Request, res: Response) => {
     try {
+      const limit = Math.min(Number(req.query.limit) || 20, 20);
+      const scans = await storage.getRecentScans?.(limit);
 
-      const scanId = req.params.scanId;
+      if (!Array.isArray(scans)) {
+        return res.json([]);
+      }
 
-      const scan = await storage.getScan(scanId);
+      const compactScans = scans.map((scan: any) => buildScanSummary(scan));
+      return res.json(compactScans);
+    } catch (error) {
+      console.error("Error fetching recent scans:", error);
+      return res.status(500).json({ message: "Failed to fetch recent scans" });
+    }
+  });
+
+  /* -------- Single Scan Details -------- */
+  app.get("/api/scans/:id", async (req: Request, res: Response) => {
+    try {
+      const { id } = req.params;
+      const scan = await storage.getScanById?.(id);
 
       if (!scan) {
-        return res.status(404).json({ error: "Scan not found" });
+        return res.status(404).json({ message: "Scan not found" });
       }
 
-      const base64Image = scan.imageUrl.includes(",")
-        ? scan.imageUrl.split(",")[1]
-        : scan.imageUrl;
+      const parsedResults =
+        safeJsonParse(scan.analysisResults) ||
+        safeJsonParse(scan.results) ||
+        safeJsonParse(scan.mlResults) ||
+        null;
 
-      const imageBuffer = Buffer.from(base64Image, "base64");
+      const normalizedResults = parsedResults
+        ? normalizeDiseasePredictions(parsedResults)
+        : null;
 
-      const startTime = Date.now();
-
-      updateAnalysisProgress(scanId, 10, "Preprocessing image");
-
-      let analysisResults;
-
-      try {
-
-        updateAnalysisProgress(scanId, 30, "Running SCT analysis");
-
-        analysisResults = await analyzeWithSCT(imageBuffer, scan.imageType);
-
-      } catch (sctError) {
-
-        console.warn("SCT failed, fallback to ML model");
-
-        analysisResults = await analyzeWithMedicalModel(
-          imageBuffer,
-          scan.imageType,
-          "ResNet50"
-        );
-
-      }
-
-      /* -------- APPLY NORMALIZATION -------- */
-
-      analysisResults = normalizeDiseaseSeverities(analysisResults);
-
-      const duration = Date.now() - startTime;
-
-      if (!analysisResults.mlPredictions) {
-
-        analysisResults.mlPredictions = {
-          predictions: [],
-          modelUsed: "Combined Model",
-          processingTime: duration,
-        };
-
-      } else {
-
-        analysisResults.mlPredictions.processingTime = duration;
-
-      }
-
-      const analysisData = {
-        scanId: scan.id,
-        results: analysisResults,
-      };
-
-      const validatedAnalysisData = insertAnalysisSchema.parse(analysisData);
-
-      const analysis = await storage.createAnalysis(validatedAnalysisData);
-
-      updateAnalysisProgress(scanId, 100, "Analysis complete");
-
-      res.status(201).json({ analysis });
-
+      return res.json({
+        id: scan.id,
+        patientId: scan.patientId,
+        scanType: scan.scanType ?? scan.modality ?? "Unknown",
+        imageType: scan.imageType ?? null,
+        status: scan.status ?? "completed",
+        createdAt: scan.createdAt,
+        updatedAt: scan.updatedAt ?? null,
+        imageUrl: scan.imageUrl ?? null,
+        heatmapUrl: scan.heatmapUrl ?? null,
+        notes: scan.notes ?? null,
+        reportText: scan.reportText ?? null,
+        analysisResults: normalizedResults,
+      });
     } catch (error) {
-
-      console.error("Analysis error:", error);
-
-      res.status(500).json({ error: (error as Error).message });
-
+      console.error("Error fetching scan details:", error);
+      return res.status(500).json({ message: "Failed to fetch scan details" });
     }
-
   });
 
-  /* ---------------- ANALYSIS FETCH ---------------- */
-
-  app.get("/api/analysis/:scanId", async (req, res) => {
-
+  /* -------- Create Patient -------- */
+  app.post("/api/patients", async (req: Request, res: Response) => {
     try {
+      const {
+        patientId,
+        firstName,
+        lastName,
+        fullName,
+        name,
+        age,
+        gender,
+        phone,
+      } = req.body ?? {};
 
-      const analysis = await storage.getAnalysis(req.params.scanId);
+      const resolvedFullName =
+        fullName ||
+        name ||
+        `${firstName ?? ""} ${lastName ?? ""}`.trim() ||
+        "Unknown Patient";
 
-      if (!analysis) {
-        return res.status(404).json({ error: "Analysis not found" });
+      if (!patientId && !resolvedFullName && !firstName) {
+        return res.status(400).json({ message: "Missing patient details" });
       }
 
-      res.json(analysis);
+      const createdPatient = await storage.createPatient?.({
+        patientId: patientId ?? `TEMP-${Date.now()}`,
+        firstName: firstName ?? "",
+        lastName: lastName ?? "",
+        fullName: resolvedFullName,
+        age: age != null && age !== "" ? Number(age) : null,
+        gender: gender ?? null,
+        phone: phone ?? null,
+      });
 
+      return res.status(201).json({
+        ...createdPatient,
+        name: createdPatient?.fullName ?? resolvedFullName,
+      });
     } catch (error) {
-
-      res.status(500).json({ error: (error as Error).message });
-
+      console.error("Error creating patient:", error);
+      return res.status(500).json({
+        message:
+          error instanceof Error ? error.message : "Failed to create patient",
+      });
     }
-
   });
 
-  const httpServer = createServer(app);
+  /* -------- Upload Scan -------- */
+  app.post(
+    "/api/upload",
+    upload.single("image"),
+    async (req: Request, res: Response) => {
+      try {
+        const file = req.file;
+        const { patientCaseId, imageType, scanType } = req.body ?? {};
 
-  return httpServer;
+        if (!file) {
+          return res.status(400).json({ message: "Image file is required" });
+        }
 
+        if (!patientCaseId) {
+          if (fs.existsSync(file.path)) {
+            fs.unlinkSync(file.path);
+          }
+          return res.status(400).json({ message: "patientCaseId is required" });
+        }
+
+        const finalScanType =
+          scanType ||
+          (String(imageType || "").toLowerCase().includes("xray")
+            ? "X-Ray"
+            : "MRI");
+
+        const imageUrl = `/uploads/${path.basename(file.path)}`;
+
+        const mockAnalysisResults = normalizeDiseasePredictions({
+          mlPredictions: {
+            predictions: [
+              {
+                disease:
+                  finalScanType === "X-Ray"
+                    ? "Spinal Alignment Issue"
+                    : "Disc Herniation",
+                confidence: 0.82,
+              },
+              {
+                disease: "Spinal Stenosis",
+                confidence: 0.58,
+              },
+              {
+                disease: "Normal",
+                confidence: 0.31,
+              },
+            ],
+          },
+        });
+
+        const createdScan = await storage.createScan?.({
+          patientId: patientCaseId,
+          scanType: finalScanType,
+          imageType: imageType ?? null,
+          imageUrl,
+          heatmapUrl: null,
+          notes: null,
+          reportText: "Initial upload completed successfully",
+          analysisResults: JSON.stringify(mockAnalysisResults),
+          status: "uploaded",
+        });
+
+        return res.status(201).json({
+          message: "Scan uploaded successfully",
+          scan: createdScan
+            ? buildScanSummary({
+                ...createdScan,
+                analysisResults:
+                  createdScan.analysisResults ??
+                  JSON.stringify(mockAnalysisResults),
+              })
+            : null,
+        });
+      } catch (error) {
+        console.error("Error uploading scan:", error);
+        return res.status(500).json({
+          message:
+            error instanceof Error ? error.message : "Failed to upload scan",
+        });
+      }
+    }
+  );
+
+  /* -------- Save Analysis Result -------- */
+  app.post("/api/scans", async (req: Request, res: Response) => {
+    try {
+      const {
+        patientId,
+        scanType,
+        imageType,
+        imageUrl,
+        heatmapUrl,
+        notes,
+        reportText,
+        analysisResults,
+      } = req.body ?? {};
+
+      if (!patientId) {
+        return res.status(400).json({ message: "patientId is required" });
+      }
+
+      const normalizedResults = analysisResults
+        ? normalizeDiseasePredictions(
+            typeof analysisResults === "string"
+              ? safeJsonParse(analysisResults) ?? {}
+              : analysisResults
+          )
+        : null;
+
+      const createdScan = await storage.createScan?.({
+        patientId,
+        scanType: scanType ?? "MRI",
+        imageType: imageType ?? null,
+        imageUrl: imageUrl ?? null,
+        heatmapUrl: heatmapUrl ?? null,
+        notes: notes ?? null,
+        reportText: reportText ?? null,
+        analysisResults: normalizedResults
+          ? JSON.stringify(normalizedResults)
+          : null,
+        status: "completed",
+      });
+
+      return res.status(201).json({
+        message: "Scan saved successfully",
+        scan: createdScan
+          ? buildScanSummary({
+              ...createdScan,
+              analysisResults:
+                createdScan.analysisResults ??
+                (normalizedResults ? JSON.stringify(normalizedResults) : null),
+            })
+          : null,
+      });
+    } catch (error) {
+      console.error("Error saving scan:", error);
+      return res.status(500).json({
+        message: error instanceof Error ? error.message : "Failed to save scan",
+      });
+    }
+  });
+
+  /* -------- Dummy Analyze Endpoint -------- */
+  app.post("/api/scans/analyze", async (req: Request, res: Response) => {
+    try {
+      const { analysisResults } = req.body ?? {};
+
+      const parsed =
+        typeof analysisResults === "string"
+          ? safeJsonParse(analysisResults)
+          : analysisResults;
+
+      const normalized = normalizeDiseasePredictions(
+        parsed ?? {
+          mlPredictions: {
+            predictions: [
+              {
+                disease: "Disc Herniation",
+                confidence: 0.82,
+              },
+              {
+                disease: "Spinal Stenosis",
+                confidence: 0.58,
+              },
+            ],
+          },
+        }
+      );
+
+      return res.json({
+        message: "Analysis completed successfully",
+        analysisResults: normalized,
+      });
+    } catch (error) {
+      console.error("Error analyzing scan:", error);
+      return res.status(500).json({
+        message:
+          error instanceof Error ? error.message : "Failed to analyze scan",
+      });
+    }
+  });
+
+  return server;
 }

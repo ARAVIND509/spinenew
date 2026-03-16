@@ -17,34 +17,36 @@ export default function Upload() {
   const queryClient = useQueryClient();
   const [uploadProgress, setUploadProgress] = useState(0);
 
-  // Create patient mutation
   const createPatientMutation = useMutation({
     mutationFn: async (data: InsertPatient) => {
       return await apiRequest<Patient>("POST", "/api/patients", data);
     },
-    onSuccess: (patient) => {
+    onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/patients"] });
       toast({
         title: "Patient created",
         description: "You can now upload scans for this patient",
       });
-      // Only redirect if this wasn't called via handleDirectUpload
-      // We can check if we are on the "new-patient" tab or just let the caller handle it.
-      // But mutateAsync is used in handleDirectUpload, so onSucess still runs.
-      // Better way: handle navigation in the component tab where it's used.
     },
     onError: (error: Error) => {
       toast({
         title: "Error creating patient",
-        description: error.message,
+        description: error.message || "Failed to create patient",
         variant: "destructive",
       });
     },
   });
 
-  // Direct upload mutation
   const uploadMutation = useMutation({
-    mutationFn: async ({ file, imageType, patientId }: { file: File; imageType: string; patientId: string }) => {
+    mutationFn: async ({
+      file,
+      imageType,
+      patientId,
+    }: {
+      file: File;
+      imageType: string;
+      patientId: string;
+    }) => {
       const formData = new FormData();
       formData.append("image", file);
       formData.append("patientCaseId", patientId);
@@ -55,11 +57,23 @@ export default function Upload() {
         body: formData,
       });
 
-      if (!response.ok) {
-        throw new Error("Upload failed");
+      let result: any = null;
+
+      try {
+        result = await response.json();
+      } catch {
+        result = null;
       }
 
-      return await response.json();
+      if (!response.ok) {
+        throw new Error(
+          result?.message ||
+            result?.error ||
+            `Upload failed with status ${response.status}`
+        );
+      }
+
+      return result;
     },
     onSuccess: (data) => {
       queryClient.invalidateQueries({ queryKey: ["/api/scans"] });
@@ -68,12 +82,21 @@ export default function Upload() {
         description: "Redirecting to AI analysis",
       });
       setUploadProgress(0);
-      setLocation(`/ai-analysis/${data.scan.id}`);
+
+      if (data?.scan?.id) {
+        setLocation(`/ai-analysis/${data.scan.id}`);
+      } else {
+        toast({
+          title: "Upload completed",
+          description: "Scan uploaded, but scan ID was not returned",
+          variant: "destructive",
+        });
+      }
     },
     onError: (error: Error) => {
       toast({
         title: "Upload failed",
-        description: error.message,
+        description: error.message || "Something went wrong during upload",
         variant: "destructive",
       });
       setUploadProgress(0);
@@ -81,18 +104,21 @@ export default function Upload() {
   });
 
   const handleDirectUpload = async (file: File, imageType: string) => {
-    // For direct upload, we'll need to create a temporary patient or ask for patient ID
-    // For now, let's create a temporary patient with file name
-    const tempPatientData = {
+    const tempPatientData: InsertPatient = {
       patientId: `TEMP-${Date.now()}`,
-      name: file.name.split('.')[0],
+      name: file.name.replace(/\.[^/.]+$/, ""),
     };
 
     try {
       const patient = await createPatientMutation.mutateAsync(tempPatientData);
-      uploadMutation.mutate({ file, imageType, patientId: patient.id });
-    } catch (error) {
-      // Error handled in mutation
+
+      await uploadMutation.mutateAsync({
+        file,
+        imageType,
+        patientId: patient.id,
+      });
+    } catch {
+      setUploadProgress(0);
     }
   };
 
@@ -115,15 +141,29 @@ export default function Upload() {
 
       <Tabs defaultValue="direct" className="space-y-6">
         <TabsList className="grid w-full max-w-2xl grid-cols-1 sm:grid-cols-3 mx-auto h-auto sm:h-10">
-          <TabsTrigger value="direct" data-testid="tab-direct-upload" className="py-2">
+          <TabsTrigger
+            value="direct"
+            data-testid="tab-direct-upload"
+            className="py-2"
+          >
             <UploadIcon className="h-4 w-4 mr-2" />
             Direct Upload
           </TabsTrigger>
-          <TabsTrigger value="database" data-testid="tab-database-fetch" className="py-2">
+
+          <TabsTrigger
+            value="database"
+            data-testid="tab-database-fetch"
+            className="py-2"
+          >
             <Database className="h-4 w-4 mr-2" />
             Hospital Database
           </TabsTrigger>
-          <TabsTrigger value="new-patient" data-testid="tab-new-patient" className="py-2">
+
+          <TabsTrigger
+            value="new-patient"
+            data-testid="tab-new-patient"
+            className="py-2"
+          >
             <UserPlus className="h-4 w-4 mr-2" />
             New Patient
           </TabsTrigger>
@@ -140,7 +180,9 @@ export default function Upload() {
             <CardContent>
               <UploadScan
                 onUpload={handleDirectUpload}
-                isUploading={uploadMutation.isPending || createPatientMutation.isPending}
+                isUploading={
+                  uploadMutation.isPending || createPatientMutation.isPending
+                }
                 uploadProgress={uploadProgress}
               />
             </CardContent>
@@ -165,7 +207,7 @@ export default function Upload() {
                   createPatientMutation.mutate(data, {
                     onSuccess: (patient) => {
                       setLocation(`/case/${patient.id}`);
-                    }
+                    },
                   });
                 }}
                 isSubmitting={createPatientMutation.isPending}
