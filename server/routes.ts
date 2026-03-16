@@ -1,3 +1,70 @@
+import type { Express, Request, Response } from "express";
+import express from "express";
+import { createServer, type Server } from "http";
+import multer from "multer";
+import path from "path";
+import fs from "fs";
+import { randomUUID } from "crypto";
+import { storage } from "./storage";
+
+/* -------------------- Upload Setup -------------------- */
+const uploadsDir = path.join(process.cwd(), "uploads");
+
+if (!fs.existsSync(uploadsDir)) {
+  fs.mkdirSync(uploadsDir, { recursive: true });
+}
+
+const multerStorage = multer.diskStorage({
+  destination: (_req, _file, cb) => {
+    cb(null, uploadsDir);
+  },
+  filename: (_req, file, cb) => {
+    const ext = path.extname(file.originalname || "").toLowerCase();
+    const safeExt = ext || ".png";
+    cb(null, `${Date.now()}-${randomUUID()}${safeExt}`);
+  },
+});
+
+const upload = multer({
+  storage: multerStorage,
+  limits: {
+    fileSize: 10 * 1024 * 1024,
+  },
+  fileFilter: (_req, file, cb) => {
+    const allowedMimeTypes = [
+      "image/png",
+      "image/jpeg",
+      "image/jpg",
+      "image/webp",
+      "image/bmp",
+      "application/dicom",
+    ];
+
+    const allowedExtensions = [".png", ".jpg", ".jpeg", ".webp", ".bmp", ".dcm"];
+    const ext = path.extname(file.originalname || "").toLowerCase();
+
+    if (
+      allowedMimeTypes.includes(file.mimetype) ||
+      allowedExtensions.includes(ext)
+    ) {
+      cb(null, true);
+      return;
+    }
+
+    cb(new Error("Unsupported file type"));
+  },
+});
+
+/* -------------------- Helpers -------------------- */
+function logMem(label: string) {
+  const used = process.memoryUsage();
+  console.log(
+    `${label} | heapUsed: ${(used.heapUsed / 1024 / 1024).toFixed(2)} MB ` +
+      `| rss: ${(used.rss / 1024 / 1024).toFixed(2)} MB ` +
+      `| heapTotal: ${(used.heapTotal / 1024 / 1024).toFixed(2)} MB`
+  );
+}
+
 function normalizeDiseasePredictions(results: any) {
   logMem("normalizeDiseasePredictions start");
 
@@ -165,4 +232,135 @@ function normalizeDiseasePredictions(results: any) {
   results.mlPredictions.predictions = finalPredictions;
   logMem("normalizeDiseasePredictions end");
   return results;
+}
+
+function safeJsonParse(value: any) {
+  if (value == null) return null;
+  if (typeof value === "object") return value;
+
+  if (typeof value === "string") {
+    try {
+      return JSON.parse(value);
+    } catch (err) {
+      console.error("JSON parse error:", err);
+      return null;
+    }
+  }
+
+  return null;
+}
+
+/* -------------------- Routes -------------------- */
+export async function registerRoutes(app: Express): Promise<Server> {
+  const server = createServer(app);
+
+  app.use("/uploads", (_req, res, next) => {
+    res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
+    next();
+  });
+
+  app.use("/uploads", express.static(uploadsDir));
+
+  app.get("/api/health", async (_req: Request, res: Response) => {
+    res.json({ ok: true, message: "Server is running" });
+  });
+
+  app.get("/api/patients", async (req: Request, res: Response) => {
+    try {
+      const limit = Math.min(Number(req.query.limit) || 50, 50);
+      const patients = await storage.getPatients(limit);
+      return res.json(patients ?? []);
+    } catch (error) {
+      console.error("Error fetching patients:", error);
+      return res.status(500).json({ message: "Failed to fetch patients" });
+    }
+  });
+
+  app.get("/api/scans/recent", async (req: Request, res: Response) => {
+    try {
+      const limit = Math.min(Number(req.query.limit) || 20, 20);
+      const scans = await storage.getRecentScans(limit);
+
+      const formatted = (scans ?? []).map((scan: any) => {
+        const parsedResults =
+          safeJsonParse(scan.analysisResults) ||
+          safeJsonParse(scan.results) ||
+          safeJsonParse(scan.mlResults) ||
+          null;
+
+        const normalized = parsedResults
+          ? normalizeDiseasePredictions(parsedResults)
+          : null;
+
+        const topPrediction = normalized?.mlPredictions?.predictions?.[0] ?? null;
+
+        return {
+          ...scan,
+          resultSummary: topPrediction
+            ? {
+                disease: topPrediction.disease,
+                confidence: topPrediction.confidence,
+                severity: topPrediction.severity,
+              }
+            : null,
+        };
+      });
+
+      return res.json(formatted);
+    } catch (error) {
+      console.error("Error fetching recent scans:", error);
+      return res.status(500).json({ message: "Failed to fetch recent scans" });
+    }
+  });
+
+  app.get("/api/scans/:id", async (req: Request, res: Response) => {
+    try {
+      const scan = await storage.getScanById(req.params.id);
+
+      if (!scan) {
+        return res.status(404).json({ message: "Scan not found" });
+      }
+
+      const parsedResults =
+        safeJsonParse(scan.analysisResults) ||
+        safeJsonParse(scan.results) ||
+        safeJsonParse(scan.mlResults) ||
+        null;
+
+      const normalizedResults = parsedResults
+        ? normalizeDiseasePredictions(parsedResults)
+        : null;
+
+      return res.json({
+        ...scan,
+        analysisResults: normalizedResults,
+      });
+    } catch (error) {
+      console.error("Error fetching scan details:", error);
+      return res.status(500).json({ message: "Failed to fetch scan details" });
+    }
+  });
+
+  app.post("/api/upload", upload.single("file"), async (req: Request, res: Response) => {
+    try {
+      if (!req.file) {
+        return res.status(400).json({ message: "No file uploaded" });
+      }
+
+      return res.json({
+        success: true,
+        file: {
+          filename: req.file.filename,
+          originalname: req.file.originalname,
+          path: `/uploads/${req.file.filename}`,
+          size: req.file.size,
+        },
+      });
+    } catch (error) {
+      console.error("Upload error:", error);
+      return res.status(500).json({ message: "File upload failed" });
+    }
+  });
+
+  return server;
 }
