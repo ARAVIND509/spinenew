@@ -40,7 +40,7 @@ export const storage = {
 
   async getRecentScans(limit: number = 20) {
     return await prisma.scan.findMany({
-      orderBy: { createdAt: "desc" },
+      orderBy: { uploadedAt: "desc" },
       take: limit,
       include: {
         patient: true,

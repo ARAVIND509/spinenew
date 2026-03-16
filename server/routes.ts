@@ -276,26 +276,69 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  app.post("/api/patients", async (req: Request, res: Response) => {
+    try {
+      const {
+        patientId,
+        firstName,
+        lastName,
+        fullName,
+        age,
+        gender,
+        phone,
+      } = req.body ?? {};
+
+      if (!patientId || String(patientId).trim() === "") {
+        return res.status(400).json({ message: "patientId is required" });
+      }
+
+      const existingPatient = await storage.getPatientByPatientId(String(patientId));
+
+      if (existingPatient) {
+        return res.status(200).json(existingPatient);
+      }
+
+      const patient = await storage.createPatient({
+        patientId: String(patientId).trim(),
+        firstName: firstName ? String(firstName).trim() : "",
+        lastName: lastName ? String(lastName).trim() : "",
+        fullName: fullName ? String(fullName).trim() : undefined,
+        age:
+          age !== undefined && age !== null && age !== ""
+            ? Number(age)
+            : null,
+        gender: gender ? String(gender).trim() : null,
+        phone: phone ? String(phone).trim() : null,
+      });
+
+      return res.status(201).json(patient);
+    } catch (error: any) {
+      console.error("Error creating patient:", error);
+      return res.status(500).json({
+        message: error?.message || "Failed to create patient",
+      });
+    }
+  });
+
   app.get("/api/scans/recent", async (req: Request, res: Response) => {
     try {
       const limit = Math.min(Number(req.query.limit) || 20, 20);
       const scans = await storage.getRecentScans(limit);
 
       const formatted = (scans ?? []).map((scan: any) => {
-        const parsedResults =
+        const metadata =
+          safeJsonParse(scan.metadata) ||
           safeJsonParse(scan.analysisResults) ||
           safeJsonParse(scan.results) ||
           safeJsonParse(scan.mlResults) ||
           null;
 
-        const normalized = parsedResults
-          ? normalizeDiseasePredictions(parsedResults)
-          : null;
-
+        const normalized = metadata ? normalizeDiseasePredictions(metadata) : null;
         const topPrediction = normalized?.mlPredictions?.predictions?.[0] ?? null;
 
         return {
           ...scan,
+          analysisResults: normalized,
           resultSummary: topPrediction
             ? {
                 disease: topPrediction.disease,
@@ -322,9 +365,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
 
       const parsedResults =
-        safeJsonParse(scan.analysisResults) ||
-        safeJsonParse(scan.results) ||
-        safeJsonParse(scan.mlResults) ||
+        safeJsonParse((scan as any).metadata) ||
+        safeJsonParse((scan as any).analysisResults) ||
+        safeJsonParse((scan as any).results) ||
+        safeJsonParse((scan as any).mlResults) ||
         null;
 
       const normalizedResults = parsedResults

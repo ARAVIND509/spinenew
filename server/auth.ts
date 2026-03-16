@@ -1,10 +1,11 @@
 import passport from "passport";
 import { Strategy as LocalStrategy } from "passport-local";
-import type { Express } from "express";
+import type { Express, Request, Response, NextFunction } from "express";
 import session from "express-session";
 import { scrypt, randomBytes, timingSafeEqual } from "crypto";
 import { promisify } from "util";
 import { storage } from "./storage";
+import { User as SelectUser } from "@shared/schema";
 
 const scryptAsync = promisify(scrypt);
 
@@ -16,26 +17,17 @@ export async function hashPassword(password: string) {
 
 async function comparePasswords(supplied: string, stored: string) {
   const [hashed, salt] = stored.split(".");
-
-  if (!hashed || !salt) {
-    return false;
-  }
+  if (!hashed || !salt) return false;
 
   const hashedBuf = Buffer.from(hashed, "hex");
   const suppliedBuf = (await scryptAsync(supplied, salt, 64)) as Buffer;
 
-  if (hashedBuf.length !== suppliedBuf.length) {
-    return false;
-  }
+  if (hashedBuf.length !== suppliedBuf.length) return false;
 
   return timingSafeEqual(hashedBuf, suppliedBuf);
 }
 
 export function setupAuth(app: Express) {
-  if (app.get("env") === "production") {
-    app.set("trust proxy", 1);
-  }
-
   const sessionSettings: session.SessionOptions = {
     secret: process.env.SESSION_SECRET || "spineguardai-secret",
     resave: false,
@@ -44,9 +36,16 @@ export function setupAuth(app: Express) {
       secure: app.get("env") === "production",
       httpOnly: true,
       sameSite: "lax",
-      maxAge: 1000 * 60 * 60 * 24 * 7,
     },
   };
+
+  if ((storage as any).sessionStore) {
+    sessionSettings.store = (storage as any).sessionStore;
+  }
+
+  if (app.get("env") === "production") {
+    app.set("trust proxy", 1);
+  }
 
   app.use(session(sessionSettings));
   app.use(passport.initialize());
@@ -68,25 +67,25 @@ export function setupAuth(app: Express) {
 
         return done(null, user);
       } catch (err) {
-        return done(err as any);
+        return done(err);
       }
     })
   );
 
-  passport.serializeUser((user: any, done) => {
-    done(null, String(user.id));
+  passport.serializeUser((user, done) => {
+    done(null, (user as SelectUser).id);
   });
 
   passport.deserializeUser(async (id: string, done) => {
     try {
-      const user = await storage.getUser(id);
+      const user = await storage.getUser(String(id));
       done(null, user || false);
     } catch (err) {
-      done(err as any);
+      done(err);
     }
   });
 
-  app.post("/api/login", (req, res, next) => {
+  app.post("/api/login", (req: Request, res: Response, next: NextFunction) => {
     passport.authenticate("local", (err: any, user: any) => {
       if (err) return next(err);
 
@@ -99,15 +98,12 @@ export function setupAuth(app: Express) {
       req.login(user, (loginErr) => {
         if (loginErr) return next(loginErr);
 
-        return res.status(200).json({
-          id: user.id,
-          username: user.username,
-        });
+        return res.status(200).json(user);
       });
     })(req, res, next);
   });
 
-  app.post("/api/logout", (req, res, next) => {
+  app.post("/api/logout", (req: Request, res: Response, next: NextFunction) => {
     req.logout((err) => {
       if (err) return next(err);
 
@@ -120,22 +116,21 @@ export function setupAuth(app: Express) {
     });
   });
 
-  app.get("/api/user", (req, res) => {
-    if (!req.isAuthenticated || !req.isAuthenticated()) {
+  app.get("/api/user", (req: Request, res: Response) => {
+    if (!req.isAuthenticated()) {
       return res.sendStatus(401);
     }
 
-    const user = req.user as any;
-
-    return res.json({
-      id: user.id,
-      username: user.username,
-    });
+    return res.json(req.user);
   });
 }
 
-export function ensureAuthenticated(req: any, res: any, next: any) {
-  if (req.isAuthenticated && req.isAuthenticated()) {
+export function ensureAuthenticated(
+  req: Request,
+  res: Response,
+  next: NextFunction
+) {
+  if (req.isAuthenticated()) {
     return next();
   }
 
