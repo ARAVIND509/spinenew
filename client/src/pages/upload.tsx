@@ -17,6 +17,7 @@ export default function Upload() {
   const queryClient = useQueryClient();
   const [uploadProgress, setUploadProgress] = useState(0);
 
+  /* -------------------- CREATE PATIENT -------------------- */
   const createPatientMutation = useMutation({
     mutationFn: async (data: InsertPatient) => {
       return await apiRequest<Patient>("POST", "/api/patients", data);
@@ -37,6 +38,7 @@ export default function Upload() {
     },
   });
 
+  /* -------------------- UPLOAD -------------------- */
   const uploadMutation = useMutation({
     mutationFn: async ({
       file,
@@ -48,9 +50,15 @@ export default function Upload() {
       patientId: string;
     }) => {
       const formData = new FormData();
+
+      // ✅ FIXED FIELD NAME
       formData.append("image", file);
+
       formData.append("patientCaseId", patientId);
       formData.append("imageType", imageType);
+
+      // 👉 simulate progress
+      setUploadProgress(30);
 
       const response = await fetch("/api/upload", {
         method: "POST",
@@ -73,14 +81,19 @@ export default function Upload() {
         );
       }
 
+      // 👉 complete progress
+      setUploadProgress(100);
+
       return result;
     },
     onSuccess: (data) => {
       queryClient.invalidateQueries({ queryKey: ["/api/scans"] });
+
       toast({
         title: "Scan uploaded successfully",
         description: "Redirecting to AI analysis",
       });
+
       setUploadProgress(0);
 
       if (data?.scan?.id) {
@@ -99,11 +112,23 @@ export default function Upload() {
         description: error.message || "Something went wrong during upload",
         variant: "destructive",
       });
+
       setUploadProgress(0);
     },
   });
 
+  /* -------------------- HANDLE UPLOAD -------------------- */
   const handleDirectUpload = async (file: File, imageType: string) => {
+    // ✅ FILE SIZE VALIDATION (VERY IMPORTANT)
+    if (file.size > 5 * 1024 * 1024) {
+      toast({
+        title: "File too large",
+        description: "Please upload file smaller than 5MB",
+        variant: "destructive",
+      });
+      return;
+    }
+
     const tempPatientData: InsertPatient = {
       patientId: `TEMP-${Date.now()}`,
       name: file.name.replace(/\.[^/.]+$/, ""),
@@ -122,6 +147,7 @@ export default function Upload() {
     }
   };
 
+  /* -------------------- DATABASE SELECT -------------------- */
   const handleDatabaseScanSelect = (scan: Scan, patient: Patient) => {
     toast({
       title: "Scan selected",
@@ -130,6 +156,7 @@ export default function Upload() {
     setLocation(`/ai-analysis/${scan.id}`);
   };
 
+  /* -------------------- UI -------------------- */
   return (
     <div className="container mx-auto px-4 sm:px-6 lg:px-8 py-8">
       <div className="mb-8">
@@ -141,29 +168,17 @@ export default function Upload() {
 
       <Tabs defaultValue="direct" className="space-y-6">
         <TabsList className="grid w-full max-w-2xl grid-cols-1 sm:grid-cols-3 mx-auto h-auto sm:h-10">
-          <TabsTrigger
-            value="direct"
-            data-testid="tab-direct-upload"
-            className="py-2"
-          >
+          <TabsTrigger value="direct">
             <UploadIcon className="h-4 w-4 mr-2" />
             Direct Upload
           </TabsTrigger>
 
-          <TabsTrigger
-            value="database"
-            data-testid="tab-database-fetch"
-            className="py-2"
-          >
+          <TabsTrigger value="database">
             <Database className="h-4 w-4 mr-2" />
             Hospital Database
           </TabsTrigger>
 
-          <TabsTrigger
-            value="new-patient"
-            data-testid="tab-new-patient"
-            className="py-2"
-          >
+          <TabsTrigger value="new-patient">
             <UserPlus className="h-4 w-4 mr-2" />
             New Patient
           </TabsTrigger>
@@ -174,7 +189,7 @@ export default function Upload() {
             <CardHeader>
               <CardTitle>Direct Scan Upload</CardTitle>
               <p className="text-sm text-muted-foreground">
-                Upload MRI or X-ray scans directly for immediate analysis
+                Supports JPEG, PNG, WEBP up to 5MB
               </p>
             </CardHeader>
             <CardContent>
